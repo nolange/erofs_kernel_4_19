@@ -1,0 +1,156 @@
+From 24ec17dcb5f7890977eee94d5f500c8eda8b6f6d Mon Sep 17 00:00:00 2001
+From: Norbert Lange <nolange79@gmail.com>
+Date: Thu, 20 Feb 2020 23:07:03 +0100
+Subject: [PATCH 5/5] fixes for 4.19
+
+---
+ fs/erofs/data.c  |  4 ++--
+ fs/erofs/dir.c   | 20 +++++++++++++++++++-
+ fs/erofs/namei.c |  1 +
+ fs/erofs/super.c | 13 ++++++++++++-
+ fs/erofs/utils.c |  1 +
+ fs/erofs/zdata.c |  5 +++--
+ 6 files changed, 38 insertions(+), 6 deletions(-)
+
+diff --git a/fs/erofs/data.c b/fs/erofs/data.c
+index fc3a8d8064f8..da670c76d061 100644
+--- a/fs/erofs/data.c
++++ b/fs/erofs/data.c
+@@ -11,11 +11,11 @@
+ 
+ static void erofs_readendio(struct bio *bio)
+ {
++	int i;
+ 	struct bio_vec *bvec;
+ 	blk_status_t err = bio->bi_status;
+-	struct bvec_iter_all iter_all;
+ 
+-	bio_for_each_segment_all(bvec, bio, iter_all) {
++	bio_for_each_segment_all(bvec, bio, i) {
+ 		struct page *page = bvec->bv_page;
+ 
+ 		/* page is already locked */
+diff --git a/fs/erofs/dir.c b/fs/erofs/dir.c
+index d28c623dfef9..a95ec3fc4a6b 100644
+--- a/fs/erofs/dir.c
++++ b/fs/erofs/dir.c
+@@ -6,6 +6,24 @@
+  */
+ #include "internal.h"
+ 
++static unsigned char erofs_ftype_to_dtype(unsigned int ft)
++{
++	static const unsigned char erofs_filetype_table[] = {
++		DT_UNKNOWN,
++		DT_REG,
++		DT_DIR,
++		DT_CHR,
++		DT_BLK,
++		DT_FIFO,
++		DT_SOCK,
++		DT_LNK,
++	};
++
++	if (ft < ARRAY_SIZE(erofs_filetype_table))
++		return erofs_filetype_table[ft];
++	return DT_UNKNOWN;
++}
++
+ static void debug_one_dentry(unsigned char d_type, const char *de_name,
+ 			     unsigned int de_namelen)
+ {
+@@ -33,7 +51,7 @@ static int erofs_fill_dentries(struct inode *dir, struct dir_context *ctx,
+ 		unsigned int de_namelen;
+ 		unsigned char d_type;
+ 
+-		d_type = fs_ftype_to_dtype(de->file_type);
++		d_type = erofs_ftype_to_dtype(de->file_type);
+ 
+ 		nameoff = le16_to_cpu(de->nameoff);
+ 		de_name = (char *)dentry_blk + nameoff;
+diff --git a/fs/erofs/namei.c b/fs/erofs/namei.c
+index 3abbecbf73de..94317704dd0f 100644
+--- a/fs/erofs/namei.c
++++ b/fs/erofs/namei.c
+@@ -234,6 +234,7 @@ static struct dentry *erofs_lookup(struct inode *dir,
+ 	} else if (err) {
+ 		inode = ERR_PTR(err);
+ 	} else {
++		unsigned FT_DIR = 2;
+ 		erofs_dbg("%s, %s (nid %llu) found, d_type %u", __func__,
+ 			  dentry->d_name.name, nid, d_type);
+ 		inode = erofs_iget(dir->i_sb, nid, d_type == FT_DIR);
+diff --git a/fs/erofs/super.c b/fs/erofs/super.c
+index 057e6d7b5b7f..752cb3a5aa49 100644
+--- a/fs/erofs/super.c
++++ b/fs/erofs/super.c
+@@ -103,6 +103,17 @@ static void erofs_free_inode(struct inode *inode)
+ 	kmem_cache_free(erofs_inode_cachep, vi);
+ }
+ 
++static void erofs_i_callback(struct rcu_head *head)
++{
++	struct inode *inode = container_of(head, struct inode, i_rcu);
++	erofs_free_inode(inode);
++}
++
++static void erofs_destroy_inode(struct inode *inode)
++{
++	call_rcu(&inode->i_rcu, erofs_i_callback);
++}
++
+ static bool check_layout_compatibility(struct super_block *sb,
+ 				       struct erofs_super_block *dsb)
+ {
+@@ -629,7 +640,7 @@ static int erofs_remount(struct super_block *sb, int *flags, char *data)
+ const struct super_operations erofs_sops = {
+ 	.put_super = erofs_put_super,
+ 	.alloc_inode = erofs_alloc_inode,
+-	.free_inode = erofs_free_inode,
++	.destroy_inode = erofs_destroy_inode,
+ 	.statfs = erofs_statfs,
+ 	.show_options = erofs_show_options,
+ 	.remount_fs = erofs_remount,
+diff --git a/fs/erofs/utils.c b/fs/erofs/utils.c
+index fddc5059c930..1d529e6b792a 100644
+--- a/fs/erofs/utils.c
++++ b/fs/erofs/utils.c
+@@ -6,6 +6,7 @@
+  */
+ #include "internal.h"
+ #include <linux/pagevec.h>
++#include <linux/mm_inline.h>
+ 
+ struct page *erofs_allocpage(struct list_head *pool, gfp_t gfp)
+ {
+diff --git a/fs/erofs/zdata.c b/fs/erofs/zdata.c
+index 80e47f07d946..9c5eb0936643 100644
+--- a/fs/erofs/zdata.c
++++ b/fs/erofs/zdata.c
+@@ -7,6 +7,7 @@
+ #include "zdata.h"
+ #include "compress.h"
+ #include <linux/prefetch.h>
++#include <linux/mm_inline.h>
+ 
+ #include <trace/events/erofs.h>
+ 
+@@ -712,13 +713,13 @@ static void z_erofs_decompress_kickoff(struct z_erofs_decompressqueue *io,
+ 
+ static void z_erofs_decompressqueue_endio(struct bio *bio)
+ {
++	int i;
+ 	tagptr1_t t = tagptr_init(tagptr1_t, bio->bi_private);
+ 	struct z_erofs_decompressqueue *q = tagptr_unfold_ptr(t);
+ 	blk_status_t err = bio->bi_status;
+ 	struct bio_vec *bvec;
+-	struct bvec_iter_all iter_all;
+ 
+-	bio_for_each_segment_all(bvec, bio, iter_all) {
++	bio_for_each_segment_all(bvec, bio, i) {
+ 		struct page *page = bvec->bv_page;
+ 
+ 		DBG_BUGON(PageUptodate(page));
+-- 
+2.25.0
+

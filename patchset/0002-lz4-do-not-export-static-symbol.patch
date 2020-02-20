@@ -1,0 +1,27 @@
+From 4902ca6382c54b8afb446b0a28466748c27cd9bd Mon Sep 17 00:00:00 2001
+From: Linus Torvalds <torvalds@linux-foundation.org>
+Date: Fri, 20 Sep 2019 09:06:26 -0700
+Subject: [PATCH 2/5] lz4: do not export static symbol
+
+Kbuild now complains (rightly) about it.
+
+Signed-off-by: Linus Torvalds <torvalds@linux-foundation.org>
+---
+ lib/lz4/lz4hc_compress.c | 1 -
+ 1 file changed, 1 deletion(-)
+
+diff --git a/lib/lz4/lz4hc_compress.c b/lib/lz4/lz4hc_compress.c
+index 176f03b83e56..1b61d874e337 100644
+--- a/lib/lz4/lz4hc_compress.c
++++ b/lib/lz4/lz4hc_compress.c
+@@ -663,7 +663,6 @@ static void LZ4HC_setExternalDict(
+ 	/* match referencing will resume from there */
+ 	ctxPtr->nextToUpdate = ctxPtr->dictLimit;
+ }
+-EXPORT_SYMBOL(LZ4HC_setExternalDict);
+ 
+ static int LZ4_compressHC_continue_generic(
+ 	LZ4_streamHC_t *LZ4_streamHCPtr,
+-- 
+2.25.0
+
